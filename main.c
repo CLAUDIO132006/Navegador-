@@ -24,7 +24,7 @@ extern unsigned char smap_irx[];    extern unsigned int size_smap_irx;
 #define TEXT_MAX   (160 * 1024)
 #define MAX_LINES  6000
 #define MAX_LINKS  128
-#define URL_MAX    256
+#define URL_MAX    512
 #define HIST_MAX   16
 #define COLS       74
 #define ROWS       24
@@ -221,7 +221,7 @@ static int resolve_host(const char *host, struct in_addr *out)
 
 static int http_get(const char *url)
 {
-    char host[128], path[200], req[512];
+    char host[128], path[400], req[800];
     int port = 80, hn = 0, s, n;
     const char *p;
     struct sockaddr_in sa;
@@ -291,6 +291,20 @@ static void resolve_url(const char *base, const char *href, char *out)
     q = strrchr(tmp + olen, '/');
     if (!q) snprintf(out, URL_MAX, "%.*s/%s", olen, base, href);
     else snprintf(out, URL_MAX, "%.*s%s", (int)(q - tmp) + 1, tmp, href);
+}
+
+
+static void urlenc(const char *in, char *out, int osz)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    int o = 0;
+    while (*in && o < osz - 4) {
+        unsigned char c = (unsigned char)*in++;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || c == ':' || c == '/') out[o++] = c;
+        else if (c == ' ') out[o++] = '+';
+        else { out[o++] = '%'; out[o++] = hex[c >> 4]; out[o++] = hex[c & 15]; }
+    }
+    out[o] = 0;
 }
 
 /* ---------------- HTML -> texto ---------------- */
@@ -529,6 +543,11 @@ static int load_page(const char *url)
 
     snprintf(u, sizeof u, "%s", url);
     for (redir = 0; redir < 5; redir++) {
+        if (!strncasecmp(u, "https://", 8)) {
+            char enc[URL_MAX];
+            urlenc(u, enc, sizeof enc);
+            snprintf(u, sizeof u, "http://frogfind.com/read.php?a=%s", enc);
+        }
         show_loading(u);
         if (http_get(u) < 0) return -1;
         code = 0;
@@ -599,7 +618,7 @@ static void blank_rows(int n)
 
 static void draw_page(void)
 {
-    char buf[256], st[256];
+    char buf[256], st[700];
     int r, li, n, last;
     scr_setXY(0, 1);
     scr_printf("  %-74.74s\n", cur_url);
@@ -621,62 +640,111 @@ static void draw_page(void)
         snprintf(st, sizeof st, "L%d-%d/%d  enlaces: %d", scroll_y + 1, last, nlines, nlinks);
     }
     scr_printf("  %-74.74s\n", st);
-    scr_printf("  %-74.74s\n", "^v scroll  <> enlace  X abrir  O atras  L1/R1 pag  START menu  SELECT recargar");
+    scr_printf("  %-74.74s\n", "^v scroll  <> enlace  X abrir  O atras  L1/R1 pag  START/TRI buscar");
 }
 
-static const char *bm_name[] = { "Example.com", "CERN (primera web)", "NeverSSL", "Escribir URL..." };
-static const char *bm_url[]  = { "http://example.com/", "http://info.cern.ch/", "http://neverssl.com/", NULL };
-#define BM_N 4
+static const char *kb_rows[5] = { "1234567890", "qwertyuiop", "asdfghjkl.", "zxcvbnm-/:", "?=&%_~+@!#" };
+static const char *kb_act[4] = { "ESPACIO", "MAYUS", "BORRAR", "BUSCAR" };
 
-static void draw_menu(int msel)
+static void build_target(const char *q, char *out)
 {
-    int i;
+    char enc[URL_MAX];
+    int i, has_space = 0, has_dot = 0;
+    for (i = 0; q[i]; i++) { if (q[i] == ' ') has_space = 1; if (q[i] == '.') has_dot = 1; }
+    if (!strncasecmp(q, "http://", 7) || !strncasecmp(q, "https://", 8)) {
+        snprintf(out, URL_MAX, "%s", q);
+    } else if (!has_space && has_dot) {
+        snprintf(out, URL_MAX, "http://%s", q);
+    } else {
+        urlenc(q, enc, sizeof enc);
+        snprintf(out, URL_MAX, "http://frogfind.com/?q=%s", enc);
+    }
+}
+
+static void draw_home(const char *q, int kx, int ky, int shift)
+{
+    char line[160];
+    int r, c, i;
+
     scr_setXY(0, 1);
-    scr_printf("  %-74.74s\n", "PS2 Browser v0.1");
+    blank_rows(1);
+    scr_printf("  %-74.74s\n", "        P S 2   B R O W S E R");
+    snprintf(line, sizeof line, "        IP: %s", my_ip);
+    scr_printf("  %-74.74s\n", line);
+    blank_rows(1);
+    snprintf(line, sizeof line, "  Buscar: %s_", q);
+    scr_printf("  %-74.74s\n", line);
+    blank_rows(1);
+    for (r = 0; r < 5; r++) {
+        int o = 0;
+        char row[64];
+        o += snprintf(row + o, sizeof row - o, "          ");
+        for (c = 0; c < 10; c++) {
+            char ch = kb_rows[r][c];
+            if (shift) ch = (char)toupper((unsigned char)ch);
+            o += snprintf(row + o, sizeof row - o, (ky == r && kx == c) ? "[%c]" : " %c ", ch);
+        }
+        scr_printf("  %-74.74s\n", row);
+    }
     {
-        char b[64];
-        snprintf(b, sizeof b, "IP: %s", my_ip);
-        scr_printf("  %-74.74s\n", b);
+        int o = 0;
+        char row[96];
+        o += snprintf(row + o, sizeof row - o, "      ");
+        for (i = 0; i < 4; i++) {
+            o += snprintf(row + o, sizeof row - o, (ky == 5 && kx == i) ? "[%s] " : " %s  ", kb_act[i]);
+        }
+        scr_printf("  %-74.74s\n", row);
     }
     blank_rows(1);
-    for (i = 0; i < BM_N; i++) {
-        char b[96];
-        snprintf(b, sizeof b, "%c %s", i == msel ? '>' : ' ', bm_name[i]);
-        scr_printf("  %-74.74s\n", b);
-    }
-    blank_rows(2);
-    scr_printf("  %-74.74s\n", "^v elegir   X abrir   O volver a la pagina");
-    scr_printf("  %-74.74s\n", "Solo webs HTTP (sin HTTPS todavia).");
-    blank_rows(ROWS - 6);
+    scr_printf("  %-74.74s\n", "  Flechas: mover   X: letra   CUADRADO: borrar   TRIANGULO: espacio");
+    scr_printf("  %-74.74s\n", "  START: buscar    O: volver a la pagina");
+    scr_printf("  %-74.74s\n", "  Escribe una busqueda o una direccion (ej: wikipedia.org)");
+    blank_rows(ROWS + 3 - 17);
 }
 
-static int url_editor(char *out)
+static int home_screen(char *out)
 {
-    static const char cs[] = "abcdefghijklmnopqrstuvwxyz0123456789./:-_?=&%#~+@!ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    int ci = 0, n = (int)strlen(cs), len;
-    char buf[URL_MAX];
+    char q[84];
+    int ql = 0, kx = 0, ky = 1, shift = 0, redraw = 1, m;
     u32 p;
 
-    snprintf(buf, sizeof buf, "http://");
-    len = strlen(buf);
+    q[0] = 0;
     for (;;) {
-        char line[URL_MAX + 4];
-        scr_setXY(0, 1);
-        scr_printf("  %-74.74s\n", "Escribir URL");
-        snprintf(line, sizeof line, "%s%c", buf, cs[ci]);
-        scr_printf("  %-74.74s\n", line);
-        blank_rows(1);
-        scr_printf("  %-74.74s\n", "^v letra   L1/R1 +-10   > anadir   < borrar   X ir   O cancelar");
-        blank_rows(ROWS - 2);
-        p = wait_pad();
-        if (p & PAD_UP) ci = (ci + 1) % n;
-        if (p & PAD_DOWN) ci = (ci + n - 1) % n;
-        if (p & PAD_R1) ci = (ci + 10) % n;
-        if (p & PAD_L1) ci = (ci + n - 10) % n;
-        if ((p & PAD_RIGHT) && len < URL_MAX - 2) { buf[len++] = cs[ci]; buf[len] = 0; }
-        if ((p & PAD_LEFT) && len > 7) buf[--len] = 0;
-        if (p & PAD_CROSS) { snprintf(out, URL_MAX, "%s", buf); return 1; }
+        if (redraw) { draw_home(q, kx, ky, shift); redraw = 0; }
+        p = pad_poll();
+        if (p) redraw = 1;
+        if (p & PAD_UP) {
+            if (ky == 5) kx = kx * 10 / 4 + 1; 
+            ky = (ky + 5) % 6;
+            if (ky == 5) kx = kx * 4 / 10;
+            if (kx > 9) kx = 9;
+        }
+        if (p & PAD_DOWN) {
+            if (ky == 5) kx = kx * 10 / 4 + 1;
+            ky = (ky + 1) % 6;
+            if (ky == 5) kx = kx * 4 / 10;
+            if (kx > 9) kx = 9;
+        }
+        m = (ky == 5) ? 4 : 10;
+        if (p & PAD_RIGHT) kx = (kx + 1) % m;
+        if (p & PAD_LEFT)  kx = (kx + m - 1) % m;
+        if ((p & PAD_SQUARE) && ql > 0) q[--ql] = 0;
+        if ((p & PAD_TRIANGLE) && ql < 80) { q[ql++] = ' '; q[ql] = 0; }
+        if (p & PAD_CROSS) {
+            if (ky < 5) {
+                if (ql < 80) {
+                    char ch = kb_rows[ky][kx];
+                    if (shift) ch = (char)toupper((unsigned char)ch);
+                    q[ql++] = ch; q[ql] = 0;
+                }
+            } else if (kx == 0) { if (ql < 80) { q[ql++] = ' '; q[ql] = 0; } }
+            else if (kx == 1) shift = !shift;
+            else if (kx == 2) { if (ql > 0) q[--ql] = 0; }
+            else if (kx == 3 && ql > 0) { build_target(q, out); return 1; }
+        }
+        if ((p & PAD_START) && ql > 0) { build_target(q, out); return 1; }
         if (p & PAD_CIRCLE) return 0;
+        usleep(16000);
     }
 }
 
@@ -695,59 +763,53 @@ static void select_link(int s)
     }
 }
 
-enum { M_MENU, M_PAGE };
+static void page_loop(void)
+{
+    int redraw = 1, max_scroll;
+    u32 p;
+
+    for (;;) {
+        p = pad_poll();
+        max_scroll = nlines - ROWS; if (max_scroll < 0) max_scroll = 0;
+        if (redraw) { draw_page(); redraw = 0; }
+        if (p & PAD_DOWN) { if (scroll_y < max_scroll) { scroll_y++; redraw = 1; } }
+        if (p & PAD_UP)   { if (scroll_y > 0) { scroll_y--; redraw = 1; } }
+        if (p & PAD_R1)   { scroll_y += ROWS - 2; if (scroll_y > max_scroll) scroll_y = max_scroll; redraw = 1; }
+        if (p & PAD_L1)   { scroll_y -= ROWS - 2; if (scroll_y < 0) scroll_y = 0; redraw = 1; }
+        if (p & PAD_RIGHT) { select_link(sel < 0 ? 0 : (sel + 1 < nlinks ? sel + 1 : sel)); redraw = 1; }
+        if (p & PAD_LEFT)  { select_link(sel <= 0 ? 0 : sel - 1); redraw = 1; }
+        if ((p & PAD_CROSS) && sel >= 0) {
+            char ab[URL_MAX];
+            resolve_url(cur_url, links[sel], ab);
+            navigate(ab, 1);
+            redraw = 1;
+        }
+        if (p & PAD_CIRCLE) {
+            if (hist_n > 0) { navigate(hist[--hist_n], 0); redraw = 1; }
+            else return;
+        }
+        if (p & PAD_SELECT) { char cu[URL_MAX]; snprintf(cu, sizeof cu, "%s", cur_url); navigate(cu, 0); redraw = 1; }
+        if (p & (PAD_START | PAD_TRIANGLE)) return;
+        usleep(16000);
+    }
+}
 
 int main(void)
 {
-    int mode = M_MENU, msel = 0, redraw = 1, max_scroll;
-    u32 p;
+    char target[URL_MAX];
 
     init_iop();
     init_scr();
-    scr_printf("\n  PS2 Browser v0.1\n  Iniciando red (DHCP)...\n");
+    scr_printf("\n  PS2 Browser v0.2\n  Iniciando red (DHCP)...\n");
     pad_setup();
     if (!net_init()) scr_printf("  Sin red. Conecta el adaptador de red y reinicia.\n");
 
     for (;;) {
-        p = pad_poll();
-        if (mode == M_MENU) {
-            if (redraw) { draw_menu(msel); redraw = 0; }
-            if (p & PAD_UP)   { msel = (msel + BM_N - 1) % BM_N; redraw = 1; }
-            if (p & PAD_DOWN) { msel = (msel + 1) % BM_N; redraw = 1; }
-            if (p & PAD_CIRCLE) { if (cur_url[0]) { mode = M_PAGE; redraw = 1; } }
-            if (p & PAD_CROSS) {
-                char url[URL_MAX];
-                if (bm_url[msel]) {
-                    if (navigate(bm_url[msel], 1)) mode = M_PAGE;
-                } else if (url_editor(url)) {
-                    if (navigate(url, 1)) mode = M_PAGE;
-                }
-                redraw = 1;
-            }
-        } else {
-            max_scroll = nlines - ROWS; if (max_scroll < 0) max_scroll = 0;
-            if (redraw) { draw_page(); redraw = 0; }
-            if (p & PAD_DOWN) { if (scroll_y < max_scroll) { scroll_y++; redraw = 1; } }
-            if (p & PAD_UP)   { if (scroll_y > 0) { scroll_y--; redraw = 1; } }
-            if (p & PAD_R1)   { scroll_y += ROWS - 2; if (scroll_y > max_scroll) scroll_y = max_scroll; redraw = 1; }
-            if (p & PAD_L1)   { scroll_y -= ROWS - 2; if (scroll_y < 0) scroll_y = 0; redraw = 1; }
-            if (p & PAD_RIGHT) { select_link(sel < 0 ? 0 : (sel + 1 < nlinks ? sel + 1 : sel)); redraw = 1; }
-            if (p & PAD_LEFT)  { select_link(sel <= 0 ? 0 : sel - 1); redraw = 1; }
-            if ((p & PAD_CROSS) && sel >= 0) {
-                char ab[URL_MAX];
-                resolve_url(cur_url, links[sel], ab);
-                navigate(ab, 1);
-                redraw = 1;
-            }
-            if (p & PAD_CIRCLE) {
-                if (hist_n > 0) { navigate(hist[--hist_n], 0); }
-                else mode = M_MENU;
-                redraw = 1;
-            }
-            if (p & PAD_SELECT) { char c[URL_MAX]; snprintf(c, sizeof c, "%s", cur_url); navigate(c, 0); redraw = 1; }
-            if (p & PAD_START) { mode = M_MENU; redraw = 1; }
+        if (home_screen(target)) {
+            if (navigate(target, 1)) page_loop();
+        } else if (cur_url[0]) {
+            page_loop();
         }
-        usleep(16000);
     }
     return 0;
 }
