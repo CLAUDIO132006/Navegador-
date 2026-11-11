@@ -1,4 +1,4 @@
-name: Build PS2 ELF
+name: Build ELF
 
 on:
   push:
@@ -9,10 +9,16 @@ jobs:
     runs-on: ubuntu-latest
     container: ps2dev/ps2dev:latest
     steps:
-      - run: apk add --no-cache git make
+      - name: Instalar git
+        run: apk add --no-cache git
+
       - uses: actions/checkout@v4
-      - run: make
-      - uses: actions/upload-artifact@v4
+
+      - name: Compilar
+        run: make
+
+      - name: Subir ELF
+        uses: actions/upload-artifact@v4
         with:
-          name: psbrowser-elf
-          path: psbrowser.elf
+          name: ps2browser-elf
+          path: ps2browser.elf
