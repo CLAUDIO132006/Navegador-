@@ -46,7 +46,6 @@
 /* ============================================ */
 
 #define HOME_URL    PROXY "/"
-#define CACHE_DIR   "mass:/DVD"
 #define MAX_PAGE    (256 * 1024)
 #define MAX_IMG     (400 * 1024)
 #define VBUF_SIZE   (6 * 1024 * 1024)
@@ -76,10 +75,42 @@
 #define IRX(n) extern unsigned char n##_irx[]; extern unsigned int size_##n##_irx;
 IRX(ps2dev9) IRX(netman) IRX(smap) IRX(usbd) IRX(bdm) IRX(bdmfs_fatfs) IRX(usbmass_bd)
 
+static char cache_dir[24] = "";
+
 static void load_irx(void *buf, unsigned int size)
 {
     int ret;
     SifExecModuleBuffer(buf, size, 0, NULL, &ret);
+}
+
+/* modulos de la BIOS (control y tarjeta de memoria) */
+static void load_rom(const char *a, const char *b)
+{
+    if (SifLoadModule(a, 0, NULL) < 0) SifLoadModule(b, 0, NULL);
+}
+
+static int dir_ok(const char *dir)
+{
+    char t[64];
+    snprintf(t, sizeof(t), "%s/.t", dir);
+    mkdir(dir, 0777);
+    int fd = open(t, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd < 0) return 0;
+    close(fd);
+    remove(t);
+    return 1;
+}
+
+/* USB real (mass:) o, si no hay, tarjeta de memoria (mc0: / mc1:) */
+static void storage_init(void)
+{
+    for (int i = 0; i < 6; i++) {
+        if (dir_ok("mass:/DVD")) { strcpy(cache_dir, "mass:/DVD"); return; }
+        sleep(1);
+    }
+    if (dir_ok("mc0:/DVD")) strcpy(cache_dir, "mc0:/DVD");
+    else if (dir_ok("mc1:/DVD")) strcpy(cache_dir, "mc1:/DVD");
+    else cache_dir[0] = 0;
 }
 
 /* ================= graficos ================= */
@@ -271,7 +302,7 @@ static void cache_name(const char *url, char *out)
 {
     unsigned long h = 5381;
     for (const char *p = url; *p; p++) h = h * 33 + (unsigned char)*p;
-    snprintf(out, 96, CACHE_DIR "/%08lx.html", h);
+    snprintf(out, 96, "%s/%08lx.html", cache_dir, h);
 }
 
 static int ci_prefix(const char *s, const char *pre)
@@ -658,8 +689,11 @@ static void load_page(const char *url, int push)
 
             char fn[96]; cache_name(url, fn);
             int fd = open(fn, O_WRONLY | O_CREAT | O_TRUNC);   /* cache en USB */
-            if (fd >= 0) { write(fd, buf, len); close(fd); set_status("Guardado en USB"); }
-            else set_status("Sin USB (sin cache)");
+            if (cache_dir[0] && fd >= 0) {
+                write(fd, buf, len); close(fd);
+                char sm[80]; snprintf(sm, sizeof(sm), "Guardado en %s", cache_dir);
+                set_status(sm);
+            } else set_status("Sin almacenamiento (sin cache)");
 
             if (push && cur_url[0] && nhist < MAX_HIST) strcpy(hist[nhist++], cur_url);
             strcpy(cur_url, url);
@@ -719,15 +753,22 @@ int main(void)
     load_irx(bdmfs_fatfs_irx, size_bdmfs_fatfs_irx);
     load_irx(usbmass_bd_irx, size_usbmass_bd_irx);
 
+    load_rom("rom0:XSIO2MAN", "rom0:SIO2MAN");
+    load_rom("rom0:XPADMAN", "rom0:PADMAN");
+    load_rom("rom0:XMCMAN", "rom0:MCMAN");
+    load_rom("rom0:XMCSERV", "rom0:MCSERV");
+
     gfx_init();
-    draw_msg("Esperando USB...");
-    sleep(4);
-    mkdir(CACHE_DIR, 0777);                    /* mass:/DVD */
+    draw_msg("Buscando almacenamiento (USB / tarjeta)...");
+    storage_init();
 
     padInit(0);
     padPortOpen(0, 0, padbuf);
-    while (padGetState(0, 0) != PAD_STATE_STABLE &&
-           padGetState(0, 0) != PAD_STATE_FINDCTP1) usleep(10000);
+    for (int i = 0; i < 300; i++) {
+        int st = padGetState(0, 0);
+        if (st == PAD_STATE_STABLE || st == PAD_STATE_FINDCTP1) break;
+        usleep(10000);
+    }
 
     network_init();
     load_page(HOME_URL, 0);
