@@ -1,6 +1,6 @@
 EE_BIN = psbrowser.elf
 EE_OBJS = main.o ps2dev9_irx.o netman_irx.o smap_irx.o
-EE_LIBS = -lps2ip_nm -lnetman -lpad -ldebug -lpatches -lc -lkernel
+EE_LIBS = -lps2ip -lnetman -lpad -ldebug -lpatches -lc -lkernel
 EE_CFLAGS += -O2 -Wall
 
 .RECIPEPREFIX = >
