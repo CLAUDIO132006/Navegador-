@@ -6,17 +6,16 @@ EE_CFLAGS += -O2 -Wall
 all: $(EE_BIN)
 
 ps2dev9_irx.c: $(PS2SDK)/iop/irx/ps2dev9.irx
-	$(PS2SDK)/bin/bin2c $< $@ ps2dev9_irx
+	bin2c $< $@ ps2dev9_irx
 
 netman_irx.c: $(PS2SDK)/iop/irx/netman.irx
-	$(PS2SDK)/bin/bin2c $< $@ netman_irx
+	bin2c $< $@ netman_irx
 
 smap_irx.c: $(PS2SDK)/iop/irx/smap.irx
-	$(PS2SDK)/bin/bin2c $< $@ smap_irx
+	bin2c $< $@ smap_irx
 
 clean:
 	rm -f $(EE_BIN) $(EE_OBJS) *_irx.c
 
 include $(PS2SDK)/Defs.make
-include $(PS2SDK)/ee/Rules.bin.make
 include $(PS2SDK)/ee/Rules.make
