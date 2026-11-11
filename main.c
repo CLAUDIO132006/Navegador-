@@ -125,7 +125,7 @@ static int net_init(void)
     }
     for (i = 0; i < 400; i++) {
         if (ps2ip_getconfig("sm0", &info) >= 0 && info.dhcp_status == DHCP_STATE_BOUND) {
-            u8 *b = (u8 *)&info.ipaddr.addr;
+            u8 *b = (u8 *)&info.ipaddr.s_addr;
             snprintf(my_ip, sizeof my_ip, "%d.%d.%d.%d", b[0], b[1], b[2], b[3]);
             return 1;
         }
@@ -134,15 +134,89 @@ static int net_init(void)
     return 0;
 }
 
+static int parse_ip(const char *s, struct in_addr *out)
+{
+    unsigned char b[4];
+    int i, v;
+    for (i = 0; i < 4; i++) {
+        if (!isdigit((unsigned char)*s)) return 0;
+        v = 0;
+        while (isdigit((unsigned char)*s)) { v = v * 10 + (*s - '0'); if (v > 255) return 0; s++; }
+        b[i] = (unsigned char)v;
+        if (i < 3) { if (*s != '.') return 0; s++; }
+    }
+    if (*s) return 0;
+    memcpy(out, b, 4);
+    return 1;
+}
+
+static int dns_skip_name(const unsigned char *r, int rl, int p)
+{
+    while (p < rl) {
+        int c = r[p];
+        if (c == 0) return p + 1;
+        if ((c & 0xC0) == 0xC0) return p + 2;
+        p += c + 1;
+    }
+    return rl;
+}
+
+static int dns_query(const char *host, const char *server, struct in_addr *out)
+{
+    unsigned char q[300], r[512];
+    struct sockaddr_in sa;
+    const char *p;
+    int n = 12, s, rl, to = 3000, qd, an, i, type, rdlen, pos;
+
+    memset(q, 0, sizeof q);
+    q[0] = 0x12; q[1] = 0x34; q[2] = 0x01; q[5] = 1;
+    p = host;
+    while (*p) {
+        const char *d = strchr(p, '.');
+        int l = d ? (int)(d - p) : (int)strlen(p);
+        if (l <= 0 || l > 63) return 0;
+        q[n++] = (unsigned char)l;
+        memcpy(q + n, p, l); n += l;
+        p += l;
+        if (*p == '.') p++;
+    }
+    q[n++] = 0; q[n++] = 0; q[n++] = 1; q[n++] = 0; q[n++] = 1;
+
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(53);
+    if (!parse_ip(server, &sa.sin_addr)) return 0;
+
+    s = lwip_socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return 0;
+    lwip_setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof to);
+    lwip_sendto(s, q, n, 0, (struct sockaddr *)&sa, sizeof sa);
+    rl = lwip_recv(s, r, sizeof r, 0);
+    lwip_close(s);
+
+    if (rl < 12 || r[0] != 0x12 || r[1] != 0x34 || (r[3] & 15) != 0) return 0;
+    qd = (r[4] << 8) | r[5];
+    an = (r[6] << 8) | r[7];
+    pos = 12;
+    for (i = 0; i < qd; i++) pos = dns_skip_name(r, rl, pos) + 4;
+    for (i = 0; i < an && pos + 10 <= rl; i++) {
+        pos = dns_skip_name(r, rl, pos);
+        if (pos + 10 > rl) break;
+        type = (r[pos] << 8) | r[pos + 1];
+        rdlen = (r[pos + 8] << 8) | r[pos + 9];
+        pos += 10;
+        if (type == 1 && rdlen == 4 && pos + 4 <= rl) { memcpy(out, r + pos, 4); return 1; }
+        pos += rdlen;
+    }
+    return 0;
+}
+
 static int resolve_host(const char *host, struct in_addr *out)
 {
-    unsigned long a = inet_addr(host);
-    struct hostent *he;
-    if (a != INADDR_NONE) { out->s_addr = a; return 1; }
-    he = gethostbyname(host);
-    if (!he || he->h_addrtype != AF_INET || !he->h_addr_list[0]) return 0;
-    memcpy(out, he->h_addr_list[0], 4);
-    return 1;
+    if (parse_ip(host, out)) return 1;
+    if (dns_query(host, "8.8.8.8", out)) return 1;
+    if (dns_query(host, "1.1.1.1", out)) return 1;
+    return 0;
 }
 
 static int http_get(const char *url)
